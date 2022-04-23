@@ -108,14 +108,24 @@ TaskActionsPanel::ReClick() noexcept
   dialog.TaskViewClicked();
 }
 
+void TaskActionsPanel::OnDownloadDeclaredTaskClicked() noexcept
+{
+
+}
+
 void
 TaskActionsPanel::Prepare(ContainerWindow &parent,
                           const PixelRect &rc) noexcept
 {
+  const WeGlideSettings &weGlideSettings = CommonInterface::GetComputerSettings().weglide;
+
   AddButton(_("New Task"), [this](){ OnNewTaskClicked(); });
   AddButton(_("Declare"), [this](){ OnDeclareClicked(); });
   AddButton(_("Browse"), [this](){ OnBrowseClicked(); });
   AddButton(_("Save"), [this](){ SaveTask(); });
+  if (weGlideSettings.pilot_id != 0) {
+    AddButton(_("Download declared task from WeGlide"), [this](){ OnDownloadDeclaredTaskClicked(); });
+  }
 
   if (is_simulator())
     /* cannot communicate with real devices in simulator mode */

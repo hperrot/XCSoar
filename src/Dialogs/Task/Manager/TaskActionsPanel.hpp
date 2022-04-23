@@ -36,6 +36,7 @@ class TaskActionsPanel : public RowFormWidget {
     DECLARE,
     BROWSE,
     SAVE,
+    DOWNLOAD_DECLARED_TASK,
   };
 
   TaskManagerDialog &dialog;
@@ -55,6 +56,7 @@ private:
   void OnBrowseClicked();
   void OnNewTaskClicked();
   void OnDeclareClicked();
+  void OnDownloadDeclaredTaskClicked() noexcept;
 
   /* virtual methods from class Widget */
   void Prepare(ContainerWindow &parent, const PixelRect &rc) noexcept override;
