@@ -38,6 +38,96 @@ Copyright_License {
 #include "Engine/Task/Factory/AbstractTaskFactory.hpp"
 #include "Engine/Waypoint/Waypoints.hpp"
 
+#include "net/http/DownloadManager.hpp"
+#include "../../ProgressDialog.hpp"
+#include "Operation/ThreadedOperationEnvironment.hpp"
+#include "LocalPath.hpp"
+#include "ui/event/PeriodicTimer.hpp"
+#include "LogFile.hpp"
+#include "system/FileUtil.hpp"
+
+#include "../../WidgetDialog.hpp"
+#include "net/http/Features.hpp"
+#include "UIGlobals.hpp"
+
+
+/**
+ * This class tracks a download and updates a #ProgressDialog.
+ */
+class WeGlideDownloadProgress final : Net::DownloadListener {
+  ProgressDialog &dialog;
+  ThreadedOperationEnvironment env;
+  const Path path_relative;
+
+  UI::PeriodicTimer update_timer{[this]{ Net::DownloadManager::Enumerate(*this); }};
+
+  UI::Notify download_complete_notify{[this]{ OnDownloadCompleteNotification(); }};
+
+  std::exception_ptr error;
+
+  bool got_size = false, complete = false, success;
+
+public:
+  WeGlideDownloadProgress(ProgressDialog &_dialog,
+                   const Path _path_relative)
+    :dialog(_dialog), env(_dialog), path_relative(_path_relative) {
+    update_timer.Schedule(std::chrono::seconds(1));
+    Net::DownloadManager::AddListener(*this);
+  }
+
+  ~WeGlideDownloadProgress() {
+    Net::DownloadManager::RemoveListener(*this);
+  }
+
+  void Rethrow() const {
+    if (error)
+      std::rethrow_exception(error);
+  }
+
+private:
+  /* virtual methods from class Net::DownloadListener */
+  void OnDownloadAdded(Path _path_relative,
+                       int64_t size, int64_t position) noexcept override {
+    if (!complete && path_relative == _path_relative) {
+      if (!got_size && size >= 0) {
+        got_size = true;
+        env.SetProgressRange(uint64_t(size) / 1024u);
+      }
+
+      if (got_size)
+        env.SetProgressPosition(uint64_t(position) / 1024u);
+    }
+  }
+
+  void OnDownloadComplete(Path _path_relative) noexcept override {
+          LogFormat("OnDownloadComplete");
+    if (!complete && path_relative == _path_relative) {
+      complete = true;
+      success = true;
+
+      download_complete_notify.SendNotification();
+      DirtyTaskListPanel();
+    }
+  }
+
+  void OnDownloadError(Path _path_relative,
+                       std::exception_ptr _error) noexcept override {
+    if (!complete && path_relative == _path_relative) {
+      complete = true;
+      success = false;
+      error = std::move(_error);
+      download_complete_notify.SendNotification();
+    }
+  }
+
+  void OnDownloadCompleteNotification() noexcept {
+    assert(complete);
+    dialog.SetModalResult(success ? mrOK : mrCancel);
+  }
+};
+
+
+
 TaskActionsPanel::TaskActionsPanel(TaskManagerDialog &_dialog,
                                    TaskMiscPanel &_parent,
                                    std::unique_ptr<OrderedTask> &_active_task,
@@ -110,7 +200,55 @@ TaskActionsPanel::ReClick() noexcept
 
 void TaskActionsPanel::OnDownloadDeclaredTaskClicked() noexcept
 {
+  try{
+    const WeGlideSettings &weGlideSettings = CommonInterface::GetComputerSettings().weglide;
+    NarrowString<0x1000> url;
+    StaticString<0x1000> filename;
 
+    url.Format("https://api.weglide.org/v1/task/declaration/%u?cup=false&tsk=true",weGlideSettings.pilot_id);
+
+    StaticString<0x1000> msg;
+    msg.Format(_("%s"),url.c_str());
+
+    const NMEAInfo &basic = CommonInterface::Basic();
+    const BrokenDateTime t = basic.date_time_utc;
+
+    filename.Format(_("declared_%04d-%02d-%02d_%02d-%02d.tsk"),t.year,t.month,t.day,t.hour,t.minute);
+    const auto we_path = MakeLocalPath(_T("weglide"));
+    const auto alloc_path = AllocatedPath::Build(we_path, filename.c_str());
+    /* Remove allocation, because download manager adds it again */
+    const auto path = RelativePath(alloc_path);
+
+    ProgressDialog dialog(UIGlobals::GetMainWindow(), UIGlobals::GetDialogLook(), _("Download"));
+
+    dialog.SetText(filename.c_str());
+
+    dialog.AddCancelButton();
+
+    const WeGlideDownloadProgress dp(dialog, path);
+    Net::DownloadManager::Enqueue(url.c_str(), path);
+
+    int result = dialog.ShowModal();
+    if (result != mrOK) {
+      Net::DownloadManager::Cancel(path);
+      dp.Rethrow();
+    }else{
+      char line[256];
+
+      if (File::ReadString(alloc_path, line, sizeof(line))){
+        if (strcmp (line,"null") == 0){
+          File::Delete(alloc_path);
+          ShowMessageBox(_("WeGlide Task Not Declared."), _("Download Error"),
+                MB_OK);
+        }
+        else {
+          ShowMessageBox(_("WeGlide Task Downloaded."), _("Download Successfull"),
+                MB_OK);
+        }
+      }
+    }
+  } catch (const std::runtime_error &e) {
+  }
 }
 
 void
